@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "chat-memory",
+  "version": "0.1.0",
+  "description": "Search your past Claude Code conversations locally. Indexes conversation text only, masks secrets, no network, no hooks.",
+  "author": {
+    "name": "Ronnie Hoffmann",
+    "url": "https://github.com/Ein-nor"
+  },
+  "homepage": "https://github.com/Ein-nor/chat-memory",
+  "repository": "https://github.com/Ein-nor/chat-memory",
+  "license": "MIT",
+  "keywords": ["memory", "search", "history", "transcripts", "privacy"]
+}
