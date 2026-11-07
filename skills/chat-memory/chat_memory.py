@@ -23,13 +23,14 @@ Environment:
 """
 
 import argparse
+import datetime
 import json
 import os
 import re
 import sqlite3
 import sys
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 
 def _default_data_dir():
@@ -46,14 +47,15 @@ PROJECTS_DIR = os.path.join(
     os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude"), "projects")
 DATA_DIR = os.path.expanduser(os.environ.get("CHAT_MEMORY_DATA_DIR") or _default_data_dir())
 DB_PATH = os.path.join(DATA_DIR, "index.db")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # ---------------------------------------------------------------------------
 # Secret masking
 # ---------------------------------------------------------------------------
 
 _SECRET_PATTERNS = [
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S),
+    # A key without its END line (cut off or pasted in part) is masked to the end.
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----(?:.*?-----END [A-Z ]*PRIVATE KEY-----|.*)", re.S),
     re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{20,}"),
     re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}"),
     re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"),
@@ -64,10 +66,12 @@ _SECRET_PATTERNS = [
     re.compile(r"\bAIza[0-9A-Za-z_\-]{35}"),
     re.compile(r"\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"),
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=\-]{20,}"),
+    # "token <hex>" (Gitea/Forgejo) and "Basic <base64>"; needs a digit so long words stay
+    re.compile(r"(?i)\b(?:token|basic)\s+(?=[A-Za-z._~+/=\-]*\d)[A-Za-z0-9._~+/=\-]{20,}"),
 ]
 # key=value / key: value  -> keep the key, mask the value
 _KEY_VALUE = re.compile(
-    r"(?i)\b((?:[A-Z0-9_]*_)?(?:password|passwd|pwd|passphrase|secret|token|api[_-]?key|"
+    r"(?i)\b((?:[A-Z0-9_]*_)?(?:password|passwd|passwort|kennwort|pwd|passphrase|secret|token|api[_-]?key|"
     r"access[_-]?key|private[_-]?key|client[_-]?secret|app[_-]?password)[A-Z0-9_]*)"
     r"(\s*[:=]\s*)(\"[^\"\n]+\"|'[^'\n]+'|[^\s,;]+)"
 )
@@ -196,12 +200,17 @@ def connect():
             DROP TABLE IF EXISTS files;
             DROP TABLE IF EXISTS sessions;
             DROP TABLE IF EXISTS seen;
+            DROP TABLE IF EXISTS copies;
             DROP TABLE IF EXISTS messages;
             CREATE TABLE files (path TEXT PRIMARY KEY, mtime REAL, size INTEGER);
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY, path TEXT, project TEXT, cwd TEXT,
                 title TEXT, started TEXT, ended TEXT, count INTEGER);
+            -- seen: the file a message is counted in; copies: other files that repeat it
             CREATE TABLE seen (uuid TEXT PRIMARY KEY, path TEXT);
+            CREATE INDEX seen_path ON seen (path);
+            CREATE TABLE copies (uuid TEXT, path TEXT, PRIMARY KEY (uuid, path));
+            CREATE INDEX copies_path ON copies (path);
             CREATE TABLE IF NOT EXISTS forgotten (session_id TEXT PRIMARY KEY);
             CREATE VIRTUAL TABLE messages USING fts5(
                 text, session_id UNINDEXED, ts UNINDEXED, role UNINDEXED,
@@ -216,6 +225,7 @@ def connect():
 def _drop_file(conn, path):
     conn.execute("DELETE FROM messages WHERE path = ?", (path,))
     conn.execute("DELETE FROM seen WHERE path = ?", (path,))
+    conn.execute("DELETE FROM copies WHERE path = ?", (path,))
     conn.execute("DELETE FROM sessions WHERE path = ?", (path,))
     conn.execute("DELETE FROM files WHERE path = ?", (path,))
 
@@ -235,10 +245,15 @@ def update_index(conn):
     for path in set(known) - set(current):
         _drop_file(conn, path)
 
+    changed = {p for p in current if known.get(p) != current[p]}
+    # When a file is gone (Claude Code cleans up old transcripts), its messages
+    # may still live on as copies in a newer file: re-read those files.
+    changed.update(r[0] for r in conn.execute(
+        "SELECT DISTINCT path FROM copies WHERE uuid NOT IN (SELECT uuid FROM seen)"))
+
     # Oldest first: a rewound conversation copies earlier messages into a new
     # file, and each message should be counted once, in the file it began in.
-    changed = sorted((p for p in current if known.get(p) != current[p]), key=lambda p: current[p][0])
-    for path in changed:
+    for path in sorted((p for p in changed if p in current), key=lambda p: current[p][0]):
         _drop_file(conn, path)
         try:
             info, messages = parse_transcript(path)
@@ -247,16 +262,17 @@ def update_index(conn):
         mtime, size = current[path]
         conn.execute("INSERT INTO files VALUES (?, ?, ?)", (path, mtime, size))
         sid = info["session_id"]
-        if sid in forgotten:
-            continue
         kept = []
         for uuid, ts, role, text in messages:
             if uuid:
                 if conn.execute("SELECT 1 FROM seen WHERE uuid = ?", (uuid,)).fetchone():
+                    conn.execute("INSERT OR IGNORE INTO copies VALUES (?, ?)", (uuid, path))
                     continue
                 conn.execute("INSERT INTO seen VALUES (?, ?)", (uuid, path))
             kept.append((text, sid, ts, role, path))
-        if not kept:
+        # A forgotten session still claims its messages, so copies of them in
+        # other files stay out of the index too.
+        if not kept or sid in forgotten:
             continue
         conn.executemany("INSERT INTO messages VALUES (?, ?, ?, ?, ?)", kept)
         stamps = [k[2] for k in kept if k[2]]
@@ -283,6 +299,23 @@ def resolve_session(conn, prefix):
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+
+def _local(ts, length=16):
+    """Transcript timestamps are UTC ('...Z'); show them in local time."""
+    try:
+        when = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return when.astimezone().isoformat(" ")[:length]
+    except (ValueError, AttributeError):
+        return (ts or "?")[:length]
+
+
+def _date(value):
+    try:
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("use YYYY-MM-DD, e.g. 2026-01-31")
+    return value
+
 
 def _fts_query(words, any_word):
     tokens = re.findall(r"\w+", " ".join(words), re.UNICODE)
@@ -318,7 +351,7 @@ def cmd_search(conn, args):
         print("No matches.")
         return
     for sid, ts, role, snip, project, title in rows:
-        print("[%s] %s · %s · %s" % (ts[:10] or "?", project, title, sid[:8]))
+        print("[%s] %s · %s · %s" % (_local(ts, 10), project, title, sid[:8]))
         print("  %s: %s\n" % ("you" if role == "user" else "claude", " ".join(snip.split())))
 
 
@@ -327,8 +360,8 @@ def cmd_show(conn, args):
     s = conn.execute("SELECT project, title, started, ended, cwd FROM sessions WHERE session_id = ?",
                      (sid,)).fetchone()
     print("Session %s · %s · %s" % (sid, s[0], s[1]))
-    print("%s → %s · %s\n" % (s[2][:16], s[3][:16], s[4] or ""))
-    rows = conn.execute("SELECT ts, role, text FROM messages WHERE session_id = ? ORDER BY ts",
+    print("%s → %s · %s\n" % (_local(s[2]), _local(s[3]), s[4] or ""))
+    rows = conn.execute("SELECT ts, role, text FROM messages WHERE session_id = ? ORDER BY ts, rowid",
                         (sid,)).fetchall()
     keep = range(len(rows))
     if args.match:
@@ -346,7 +379,7 @@ def cmd_show(conn, args):
         ts, role, text = rows[i]
         if len(text) > args.max_chars:
             text = text[:args.max_chars] + " … [%d more characters]" % (len(text) - args.max_chars)
-        print("── %s · %s" % ("you" if role == "user" else "claude", ts[11:16]))
+        print("── %s · %s" % ("you" if role == "user" else "claude", _local(ts)[11:16]))
         print(text + "\n")
         last = i
 
@@ -360,7 +393,7 @@ def cmd_sessions(conn, args):
     sql += " ORDER BY ended DESC LIMIT ?"
     params.append(args.limit)
     for sid, project, title, ended, count in conn.execute(sql, params):
-        print("%s  %s  %-20s %s (%d msgs)" % (ended[:10], sid[:8], project[:20], title, count))
+        print("%s  %s  %-20s %s (%d msgs)" % (_local(ended, 10), sid[:8], project[:20], title, count))
 
 
 def cmd_forget(conn, args):
@@ -392,7 +425,7 @@ def main():
     p = sub.add_parser("search", help="full-text search")
     p.add_argument("words", nargs="+")
     p.add_argument("--project")
-    p.add_argument("--since", help="YYYY-MM-DD")
+    p.add_argument("--since", type=_date, help="YYYY-MM-DD")
     p.add_argument("--limit", type=int, default=10)
     p.add_argument("--any", action="store_true", help="match any word instead of all")
 

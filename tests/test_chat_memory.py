@@ -58,12 +58,25 @@ class MaskSecretsTest(unittest.TestCase):
         key = "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAAB3NzaC1yc2E\n-----END OPENSSH PRIVATE KEY-----"
         self.assertMasked("here:\n" + key, "AAAAB3NzaC1yc2E")
 
+    def test_german_keys_auth_schemes_and_cut_keys(self):
+        for text, secret in [
+            ("Passwort: hunter2geheim", "hunter2geheim"),
+            ("Root-Kennwort=geheim123", "geheim123"),
+            ("Authorization: token 0123456789abcdef0123456789abcdef01234567",
+             "0123456789abcdef0123456789abcdef01234567"),
+            ("Authorization: Basic dXNlcjpwYXNzd29yZDEyMzQ1Njc4", "dXNlcjpwYXNzd29yZDEyMzQ1Njc4"),
+            ("-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0B\n(cut off)", "MIIEvQIBADANBgkqhkiG9w0B"),
+        ]:
+            with self.subTest(text=text[:20]):
+                self.assertMasked(text, secret)
+
     def test_normal_text_is_untouched(self):
         for text in [
             "Wir haben über Passwörter und Tokens gesprochen.",
             "The password policy needs 12 characters.",
             "Run git clone https://github.com/x/y",
             "sk-learn is a Python library",
+            "Das Token wird über die Zugriffsberechtigungen geprüft.",
         ]:
             with self.subTest(text=text):
                 self.assertEqual(cm.mask_secrets(text), text)
@@ -153,6 +166,38 @@ class IndexTest(unittest.TestCase):
         texts = self.indexed_texts()
         self.assertEqual(sum("Docker" in t for t in texts), 2)
         self.assertEqual(len(texts), 3)
+
+    def test_copy_takes_over_when_original_is_deleted(self):
+        first = [entry("user", "u1", "Frage zu Traefik"), entry("assistant", "a1", "Antwort zu Traefik")]
+        self.write("s1.jsonl", first)
+        os.utime(os.path.join(self.projects, "s1.jsonl"), (1, 1))
+        self.write("s2.jsonl", [dict(e, sessionId="s2") for e in first] +
+                   [entry("user", "u9", "Weiter nach dem Fortsetzen", session="s2")])
+        self.run_cli("stats")
+        os.remove(os.path.join(self.projects, "s1.jsonl"))  # Claude Code cleans up old transcripts
+        self.run_cli("stats")
+        self.assertEqual(sum("Traefik" in t for t in self.indexed_texts()), 2)
+        self.assertIn("s2", self.run_cli("search", "traefik"))
+
+    def test_forgotten_text_does_not_come_back_through_a_copy(self):
+        first = [entry("user", "u1", "Geheimes Projekt Omega")]
+        self.write("s1.jsonl", first)
+        os.utime(os.path.join(self.projects, "s1.jsonl"), (1, 1))
+        self.write("s2.jsonl", [dict(e, sessionId="s2") for e in first] +
+                   [entry("user", "u9", "Etwas anderes", session="s2")])
+        self.run_cli("stats")
+        self.run_cli("forget", "s1")
+        self.write("s1.jsonl", first + [entry("user", "u2", "Nachtrag", ts="2026-01-02T10:00:00Z")])
+        self.run_cli("stats")
+        self.write("s2.jsonl", [dict(e, sessionId="s2") for e in first] +
+                   [entry("user", "u9", "Etwas anderes", session="s2"),
+                    entry("user", "u10", "Noch mehr", session="s2")])
+        self.assertIn("No matches.", self.run_cli("search", "omega"))
+
+    def test_since_must_be_a_date(self):
+        result = subprocess.run([sys.executable, SCRIPT, "search", "x", "--since", "letzte Woche"],
+                                env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
 
     def test_updates_and_forget(self):
         self.write("s1.jsonl", [entry("user", "u1", "Alpha topic here")])

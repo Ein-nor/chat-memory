@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "chat-memory",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Search your past Claude Code conversations locally. Indexes conversation text only, masks secrets, no network, no hooks.",
   "author": {
     "name": "Ronnie Hoffmann",

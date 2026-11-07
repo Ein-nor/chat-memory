@@ -5,7 +5,7 @@ Search your past Claude Code conversations, locally.
 Claude Code keeps every session's transcript on your machine, but finding something from last week means digging through large JSON files. chat-memory indexes the conversation text and gives Claude a skill to search it when you ask things like *"How did we fix the build last week?"* or *"What did we decide about the database?"*
 
 - **Conversation text only.** Your messages and Claude's replies are indexed. Tool output, file contents, thinking and internal notices are left out.
-- **Secrets are masked** before anything is stored: API keys, tokens, passwords in `key=value` form, bearer tokens, private keys and credentials in URLs.
+- **Secrets are masked** before anything is stored: API keys, tokens, passwords in `key=value` form (also German `Passwort`/`Kennwort`), `Bearer`/`token`/`Basic` auth headers, private keys (also cut-off ones) and credentials in URLs.
 - **Stays on your machine.** No network access, no hooks, no background process. The index is readable by your user only.
 - **Nothing is injected.** Claude searches only when your question calls for it, and treats the results as information, not instructions.
 - **No dependencies.** One Python file using the standard library (Python 3.8+ with SQLite FTS5, which standard builds include).
@@ -57,7 +57,7 @@ The index updates itself on every command, so there is nothing to schedule.
 
 Set `CHAT_MEMORY_DATA_DIR` to keep the index somewhere else. Avoid folders that sync to the cloud.
 
-A rewound conversation is stored by Claude Code as a new file that repeats the earlier messages. chat-memory counts each message once.
+A rewound conversation is stored by Claude Code as a new file that repeats the earlier messages. chat-memory counts each message once. If the older file is cleaned up later, the copy takes over; messages of a forgotten session stay out of the index even where they are repeated. Times are shown in your local time zone.
 
 ## Limits
 

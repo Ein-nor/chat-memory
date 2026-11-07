@@ -4,12 +4,13 @@
     "name": "Ronnie Hoffmann",
     "url": "https://github.com/Ein-nor"
   },
+  "description": "Local, private search over your past Claude Code conversations.",
   "plugins": [
     {
       "name": "chat-memory",
       "source": "./",
       "description": "Search your past Claude Code conversations locally. Indexes conversation text only, masks secrets, no network, no hooks.",
-      "version": "0.1.0"
+      "version": "0.2.0"
     }
   ]
 }
