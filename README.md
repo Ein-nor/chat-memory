@@ -80,6 +80,8 @@ python3 -m unittest discover -s tests
 claude plugin validate .
 ```
 
+The plugin icon `.claude-plugin/icon.png` is drawn by `scripts/draw_icon.py` (standard library only). Change the colors or shapes there and run `python3 scripts/draw_icon.py` to redraw it.
+
 ## License
 
 [MIT](LICENSE)
