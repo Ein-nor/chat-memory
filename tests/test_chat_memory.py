@@ -59,6 +59,7 @@ class MaskSecretsTest(unittest.TestCase):
         self.assertMasked("here:\n" + key, "AAAAB3NzaC1yc2E")
 
     def test_german_keys_auth_schemes_and_cut_keys(self):
+        # German key names on purpose: users write "Passwort" and "Kennwort".
         for text, secret in [
             ("Passwort: hunter2geheim", "hunter2geheim"),
             ("Root-Kennwort=geheim123", "geheim123"),
@@ -72,6 +73,7 @@ class MaskSecretsTest(unittest.TestCase):
 
     def test_normal_text_is_untouched(self):
         for text in [
+            # German prose on purpose: must not trip the German key names or "token <word>".
             "Wir haben über Passwörter und Tokens gesprochen.",
             "The password policy needs 12 characters.",
             "Run git clone https://github.com/x/y",
@@ -119,10 +121,10 @@ class IndexTest(unittest.TestCase):
     def test_only_conversation_text_is_indexed(self):
         self.write("s1.jsonl", [
             {"type": "ai-title", "aiTitle": "Demo-Session", "sessionId": "s1"},
-            entry("user", "u1", "Wie baue ich ein Packer-Image?"),
+            entry("user", "u1", "How do I build a Packer image?"),
             entry("assistant", "a1", content=[
                 {"type": "thinking", "thinking": "SECRET THOUGHTS"},
-                {"type": "text", "text": "Mit einer HCL-Vorlage."},
+                {"type": "text", "text": "With an HCL template."},
                 {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cat .env"}},
             ]),
             entry("user", "u2", content=[{"type": "tool_result", "tool_use_id": "t1",
@@ -130,37 +132,37 @@ class IndexTest(unittest.TestCase):
             entry("user", "u3", "<system-reminder>internal note</system-reminder>"),
             entry("user", "u4", "<task-notification>done</task-notification>"),
             entry("user", "u5", "side chain text", isSidechain=True),
-            entry("user", "u6", "Mein Token: ghp_" + "x" * 36),
+            entry("user", "u6", "My token: ghp_" + "x" * 36),
         ])
         self.run_cli("stats")
         texts = " ".join(self.indexed_texts())
-        self.assertIn("Packer-Image", texts)
-        self.assertIn("HCL-Vorlage", texts)
+        self.assertIn("Packer image", texts)
+        self.assertIn("HCL template", texts)
         for leaked in ["SECRET THOUGHTS", "TOOL OUTPUT", "cat .env", "internal note",
                        "task-notification", "side chain", "ghp_xxx"]:
             self.assertNotIn(leaked, texts)
         self.assertIn("Demo-Session", self.run_cli("sessions"))
 
-    def test_search_show_and_umlauts(self):
+    def test_search_show_and_accents(self):
         self.write("s1.jsonl", [
-            entry("user", "u1", "Wir müssen die Größe der Partition ändern."),
-            entry("assistant", "a1", "Die Partition ist jetzt 40 GB groß.", ts="2026-01-01T10:01:00Z"),
+            entry("user", "u1", "Please update the résumé and grow the partition."),
+            entry("assistant", "a1", "The partition is now 40 GB.", ts="2026-01-01T10:01:00Z"),
         ])
-        out = self.run_cli("search", "partition", "andern")  # no umlaut needed
-        self.assertIn("»ändern«", out)
+        out = self.run_cli("search", "partition", "resume")  # no accent needed
+        self.assertIn("»résumé«", out)
         self.assertIn("No matches.", self.run_cli("search", "kubernetes"))
         shown = self.run_cli("show", "s1", "--match", "40 GB", "--context", "0")
         body = shown.split("\n\n", 1)[1]  # skip the header, whose title is the first message
         self.assertIn("40 GB", body)
-        self.assertNotIn("Größe", body)
+        self.assertNotIn("résumé", body)
 
     def test_rewound_copy_is_counted_once(self):
-        first = [entry("user", "u1", "Erste Frage zu Docker"),
-                 entry("assistant", "a1", "Antwort zu Docker")]
+        first = [entry("user", "u1", "First question about Docker"),
+                 entry("assistant", "a1", "Answer about Docker")]
         self.write("s1.jsonl", first)
         os.utime(os.path.join(self.projects, "s1.jsonl"), (1, 1))
         copy = [dict(e, sessionId="s2") for e in first] + [
-            entry("user", "u9", "Neue Frage nach dem Zurückspulen", session="s2")]
+            entry("user", "u9", "New question after the rewind", session="s2")]
         self.write("s2.jsonl", copy)
         self.run_cli("stats")
         texts = self.indexed_texts()
@@ -168,11 +170,11 @@ class IndexTest(unittest.TestCase):
         self.assertEqual(len(texts), 3)
 
     def test_copy_takes_over_when_original_is_deleted(self):
-        first = [entry("user", "u1", "Frage zu Traefik"), entry("assistant", "a1", "Antwort zu Traefik")]
+        first = [entry("user", "u1", "Question about Traefik"), entry("assistant", "a1", "Answer about Traefik")]
         self.write("s1.jsonl", first)
         os.utime(os.path.join(self.projects, "s1.jsonl"), (1, 1))
         self.write("s2.jsonl", [dict(e, sessionId="s2") for e in first] +
-                   [entry("user", "u9", "Weiter nach dem Fortsetzen", session="s2")])
+                   [entry("user", "u9", "Going on after resuming", session="s2")])
         self.run_cli("stats")
         os.remove(os.path.join(self.projects, "s1.jsonl"))  # Claude Code cleans up old transcripts
         self.run_cli("stats")
@@ -180,22 +182,22 @@ class IndexTest(unittest.TestCase):
         self.assertIn("s2", self.run_cli("search", "traefik"))
 
     def test_forgotten_text_does_not_come_back_through_a_copy(self):
-        first = [entry("user", "u1", "Geheimes Projekt Omega")]
+        first = [entry("user", "u1", "Secret project Omega")]
         self.write("s1.jsonl", first)
         os.utime(os.path.join(self.projects, "s1.jsonl"), (1, 1))
         self.write("s2.jsonl", [dict(e, sessionId="s2") for e in first] +
-                   [entry("user", "u9", "Etwas anderes", session="s2")])
+                   [entry("user", "u9", "Something else", session="s2")])
         self.run_cli("stats")
         self.run_cli("forget", "s1")
-        self.write("s1.jsonl", first + [entry("user", "u2", "Nachtrag", ts="2026-01-02T10:00:00Z")])
+        self.write("s1.jsonl", first + [entry("user", "u2", "Addendum", ts="2026-01-02T10:00:00Z")])
         self.run_cli("stats")
         self.write("s2.jsonl", [dict(e, sessionId="s2") for e in first] +
-                   [entry("user", "u9", "Etwas anderes", session="s2"),
-                    entry("user", "u10", "Noch mehr", session="s2")])
+                   [entry("user", "u9", "Something else", session="s2"),
+                    entry("user", "u10", "Even more", session="s2")])
         self.assertIn("No matches.", self.run_cli("search", "omega"))
 
     def test_since_must_be_a_date(self):
-        result = subprocess.run([sys.executable, SCRIPT, "search", "x", "--since", "letzte Woche"],
+        result = subprocess.run([sys.executable, SCRIPT, "search", "x", "--since", "last week"],
                                 env=self.env, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
 
